@@ -32,6 +32,12 @@ import {
 // taken from https://gitlab.gnome.org/GNOME/gnome-shell/-/blob/main/js/ui/dash.js
 const DASH_ANIMATION_TIME = 200;
 const DASH_VISIBILITY_TIMEOUT = 3;
+const MAGNIFY_TICK_MS = 16;
+const MAGNIFY_MAX_SCALE = 1.55;
+const MAGNIFY_HIT_AREA = 2.35;
+const MAGNIFY_SPREAD = 0.72;
+const MAGNIFY_RISE = 0.48;
+const MAGNIFY_SMOOTHING = 0.3;
 
 const Labels = Object.freeze({
     SHOW_MOUNTS: Symbol('show-mounts'),
@@ -96,6 +102,299 @@ const DockDashIconsVerticalLayout = GObject.registerClass(
         }
     });
 
+class DockDashMagnifier {
+    constructor(dash) {
+        this._dash = dash;
+        this._targets = [];
+        this._tickId = 0;
+        this._raisedContainer = null;
+    }
+
+    destroy() {
+        this.reset();
+        this._stopTick();
+        this._targets = [];
+        this._raisedContainer = null;
+    }
+
+    syncTargets() {
+        const previousTargets = new Map(this._targets.map(target => [target.actor, target]));
+        const targets = [];
+
+        this._dash._box.get_children().forEach(container => {
+            // Include separator as a translate-only target
+            if (container === this._dash._separator) {
+                targets.push(this._createTarget(container, container,
+                    previousTargets.get(container), true));
+                return;
+            }
+
+            const actor = container.child;
+            if (!actor?.icon || container.animatingOut)
+                return;
+
+            targets.push(this._createTarget(actor, container, previousTargets.get(actor)));
+        });
+
+        if (this._dash._showAppsIcon.visible && this._dash._showAppsIcon.get_parent()) {
+            const actor = this._dash._showAppsIcon.toggleButton;
+            targets.push(this._createTarget(actor, actor.get_parent(), previousTargets.get(actor)));
+        }
+
+        this._targets = targets;
+        this._targets.forEach(target => {
+            if (!target.isSeparator)
+                this._applyPivot(target.actor);
+        });
+    }
+
+    onMotion() {
+        this._ensureTick();
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    onLeave() {
+        this._ensureTick();
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    reset() {
+        this._targets.forEach(target => {
+            target.scale = 1;
+            target.translate = 0;
+            target.rise = 0;
+            target.actor.scale_x = 1;
+            target.actor.scale_y = 1;
+            target.actor.translation_x = 0;
+            target.actor.translation_y = 0;
+        });
+
+        this._restoreOrder();
+    }
+
+    _createTarget(actor, container, previousTarget, isSeparator = false) {
+        return {
+            actor,
+            container,
+            isSeparator,
+            order: previousTarget?.order ?? this._getOrder(container),
+            scale: previousTarget?.scale ?? actor.scale_x ?? 1,
+            translate: previousTarget?.translate ?? 0,
+            rise: previousTarget?.rise ?? 0,
+        };
+    }
+
+    _applyPivot(actor) {
+        switch (this._dash._position) {
+        case St.Side.TOP:
+            actor.set_pivot_point(0.5, 0.0);
+            break;
+        case St.Side.LEFT:
+            actor.set_pivot_point(0.0, 0.5);
+            break;
+        case St.Side.RIGHT:
+            actor.set_pivot_point(1.0, 0.5);
+            break;
+        case St.Side.BOTTOM:
+        default:
+            actor.set_pivot_point(0.5, 1.0);
+            break;
+        }
+    }
+
+    _ensureTick() {
+        if (this._tickId)
+            return;
+
+        this._tickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, MAGNIFY_TICK_MS, () => {
+            const keepRunning = this._tick();
+            if (!keepRunning)
+                this._tickId = 0;
+            return keepRunning ? GLib.SOURCE_CONTINUE : GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _stopTick() {
+        if (!this._tickId)
+            return;
+
+        GLib.source_remove(this._tickId);
+        this._tickId = 0;
+    }
+
+    _tick() {
+        this.syncTargets();
+        if (!this._targets.length)
+            return false;
+
+        const pointer = global.get_pointer();
+        const active = this._isWithinDash(pointer);
+        const targetScales = this._targets.map(() => 1);
+        const targetTranslations = this._targets.map(() => 0);
+        const targetRise = this._targets.map(() => 0);
+        const threshold = this._dash.iconSize * MAGNIFY_HIT_AREA;
+        let hoveredIndex = -1;
+        let highestScale = 1;
+
+        if (active) {
+            for (let i = 0; i < this._targets.length; i++) {
+                const target = this._targets[i];
+                // Separator only receives translation, no scale/rise
+                if (target.isSeparator)
+                    continue;
+
+                const center = this._getCenter(target.container);
+                const distance = this._dash._isHorizontal
+                    ? Math.abs(pointer[0] - center[0])
+                    : Math.abs(pointer[1] - center[1]);
+
+                if (distance > threshold)
+                    continue;
+
+                const progress = 1 - distance / threshold;
+                const eased = 1 - (1 - progress) * (1 - progress);
+                const scale = 1 + (MAGNIFY_MAX_SCALE - 1) * eased;
+
+                targetScales[i] = scale;
+                targetRise[i] = this._dash.iconSize * (scale - 1) * MAGNIFY_RISE;
+
+                if (scale > highestScale) {
+                    highestScale = scale;
+                    hoveredIndex = i;
+                }
+            }
+
+            for (let i = 0; i < this._targets.length; i++) {
+                const scale = targetScales[i];
+                if (scale <= 1.02)
+                    continue;
+
+                const offset = (scale - 1) * this._dash.iconSize * MAGNIFY_SPREAD;
+                for (let j = 0; j < i; j++)
+                    targetTranslations[j] -= offset;
+                for (let j = i + 1; j < this._targets.length; j++)
+                    targetTranslations[j] += offset;
+            }
+        }
+
+        let animating = false;
+
+        for (let i = 0; i < this._targets.length; i++) {
+            const target = this._targets[i];
+            target.scale = this._interpolate(target.scale, targetScales[i]);
+            target.translate = this._interpolate(target.translate, targetTranslations[i]);
+            target.rise = this._interpolate(target.rise, targetRise[i]);
+
+            this._applyTransform(target);
+
+            if (Math.abs(target.scale - targetScales[i]) > 0.01 ||
+                Math.abs(target.translate - targetTranslations[i]) > 0.5 ||
+                Math.abs(target.rise - targetRise[i]) > 0.5) {
+                animating = true;
+            }
+        }
+
+        this._updateRaisedTarget(hoveredIndex);
+
+        return active || animating;
+    }
+
+    _interpolate(current, target) {
+        return current + (target - current) * MAGNIFY_SMOOTHING;
+    }
+
+    _applyTransform(target) {
+        if (this._dash._isHorizontal) {
+            target.actor.translation_x = target.translate;
+            target.actor.translation_y = this._dash._position === St.Side.BOTTOM
+                ? -target.rise : target.rise;
+        } else {
+            target.actor.translation_x = this._dash._position === St.Side.LEFT
+                ? target.rise : -target.rise;
+            target.actor.translation_y = target.translate;
+        }
+
+        target.actor.scale_x = target.scale;
+        target.actor.scale_y = target.scale;
+    }
+
+    _getCenter(container) {
+        // Use allocation box instead of get_transformed_position()
+        // to avoid feedback loop: translations applied by the magnifier
+        // would shift the center, changing distance calculations,
+        // which changes magnification, causing icons to "spin".
+        const box = container.get_allocation_box();
+        const parent = container.get_parent();
+        if (parent) {
+            const [px, py] = parent.get_transformed_position();
+            return [px + (box.x1 + box.x2) / 2,
+                    py + (box.y1 + box.y2) / 2];
+        }
+        return [(box.x1 + box.x2) / 2, (box.y1 + box.y2) / 2];
+    }
+
+    _getOrder(container) {
+        const parent = container?.get_parent();
+        if (!parent)
+            return -1;
+
+        return parent.get_children().indexOf(container);
+    }
+
+    _updateRaisedTarget(hoveredIndex) {
+        const hoveredTarget = hoveredIndex >= 0 ? this._targets[hoveredIndex] : null;
+        const hoveredContainer = hoveredTarget?.container ?? null;
+
+        if (this._raisedContainer && this._raisedContainer !== hoveredContainer)
+            this._raisedContainer.z_position = 0;
+
+        if (hoveredContainer)
+            hoveredContainer.z_position = 1;
+
+        this._raisedContainer = hoveredContainer;
+    }
+
+    _restoreOrder() {
+        for (const target of this._targets) {
+            if (target.container)
+                target.container.z_position = 0;
+        }
+
+        this._raisedContainer = null;
+    }
+
+    _isWithinDash(pointer) {
+        const [x, y] = pointer;
+        const [dashX, dashY] = this._dash._dashContainer.get_transformed_position();
+        const [dashWidth, dashHeight] = this._dash._dashContainer.get_transformed_size();
+        const extra = this._dash.iconSize * (MAGNIFY_MAX_SCALE - 1);
+
+        switch (this._dash._position) {
+        case St.Side.TOP:
+            return x >= dashX - extra &&
+                x <= dashX + dashWidth + extra &&
+                y >= dashY - extra &&
+                y <= dashY + dashHeight + extra * 2;
+        case St.Side.LEFT:
+            return x >= dashX - extra &&
+                x <= dashX + dashWidth + extra * 2 &&
+                y >= dashY - extra &&
+                y <= dashY + dashHeight + extra;
+        case St.Side.RIGHT:
+            return x >= dashX - extra * 2 &&
+                x <= dashX + dashWidth + extra &&
+                y >= dashY - extra &&
+                y <= dashY + dashHeight + extra;
+        case St.Side.BOTTOM:
+        default:
+            return x >= dashX - extra &&
+                x <= dashX + dashWidth + extra &&
+                y >= dashY - extra * 2 &&
+                y <= dashY + dashHeight + extra;
+        }
+    }
+}
+
 
 const baseIconSizes = [16, 22, 24, 32, 48, 64, 96, 128];
 
@@ -133,6 +432,9 @@ export const DockDash = GObject.registerClass({
             name: 'dash',
             offscreen_redirect: Clutter.OffscreenRedirect.ALWAYS,
             layout_manager: new Clutter.BinLayout(),
+            reactive: true,
+            track_hover: true,
+            clip_to_allocation: false,
         });
 
         this._maxWidth = -1;
@@ -164,6 +466,9 @@ export const DockDash = GObject.registerClass({
             vertical: !this._isHorizontal,
             y_expand: this._isHorizontal,
             x_expand: !this._isHorizontal,
+            reactive: true,
+            track_hover: true,
+            clip_to_allocation: false,
         });
 
         this._scrollView = new St.ScrollView({
@@ -173,6 +478,9 @@ export const DockDash = GObject.registerClass({
             x_expand: this._isHorizontal,
             y_expand: !this._isHorizontal,
             enable_mouse_scrolling: false,
+            reactive: true,
+            track_hover: true,
+            clip_to_allocation: false,
         });
 
         this._scrollView.connect('scroll-event', this._onScrollEvent.bind(this));
@@ -182,6 +490,7 @@ export const DockDash = GObject.registerClass({
             x_align: Clutter.ActorAlign.FILL,
             y_align: Clutter.ActorAlign.FILL,
             vertical: !this._isHorizontal,
+            clip_to_allocation: false,
         });
         this._boxContainer.add_style_class_name(Theming.PositionStyleClass[this._position]);
 
@@ -205,6 +514,9 @@ export const DockDash = GObject.registerClass({
         this._showAppsIcon.icon.setIconSize(this.iconSize);
         this._showAppsIcon.x_expand = false;
         this._showAppsIcon.y_expand = false;
+        this.showAppsButton.connect('motion-event', () => this._magnifier.onMotion());
+        this.showAppsButton.connect('enter-event', () => this._magnifier.onMotion());
+        this.showAppsButton.connect('leave-event', () => this._magnifier.onLeave());
         this.showAppsButton.connect('notify::hover', a => {
             if (this._showAppsIcon.get_parent() === this._boxContainer)
                 this._ensureItemVisibility(a);
@@ -236,6 +548,17 @@ export const DockDash = GObject.registerClass({
 
         this.add_child(this._background);
         this.add_child(this._dashContainer);
+
+        this._magnifier = new DockDashMagnifier(this);
+        this.connect('motion-event', () => this._magnifier.onMotion());
+        this.connect('enter-event', () => this._magnifier.onMotion());
+        this.connect('leave-event', () => this._magnifier.onLeave());
+        this._dashContainer.connect('motion-event', () => this._magnifier.onMotion());
+        this._dashContainer.connect('enter-event', () => this._magnifier.onMotion());
+        this._dashContainer.connect('leave-event', () => this._magnifier.onLeave());
+        this._scrollView.connect('motion-event', () => this._magnifier.onMotion());
+        this._scrollView.connect('enter-event', () => this._magnifier.onMotion());
+        this._scrollView.connect('leave-event', () => this._magnifier.onLeave());
 
         this._workId = Main.initializeDeferredWork(this._box, this._redisplay.bind(this));
 
@@ -312,6 +635,7 @@ export const DockDash = GObject.registerClass({
     }
 
     _onDestroy() {
+        this._magnifier.destroy();
         this.iconAnimator.destroy();
 
         if (this._requiresVisibilityTimeout) {
@@ -524,6 +848,9 @@ export const DockDash = GObject.registerClass({
         item.setChild(appIcon);
 
         appIcon.connect('notify::hover', a => this._ensureItemVisibility(a));
+        appIcon.connect('motion-event', () => this._magnifier.onMotion());
+        appIcon.connect('enter-event', () => this._magnifier.onMotion());
+        appIcon.connect('leave-event', () => this._magnifier.onLeave());
         appIcon.connect('clicked', actor => {
             ensureActorVisibleInScrollView(this._scrollView, actor);
         });
@@ -741,6 +1068,8 @@ export const DockDash = GObject.registerClass({
                 mode: Clutter.AnimationMode.EASE_OUT_QUAD,
             });
         }
+
+        this._magnifier?.syncTargets();
     }
 
     _redisplay() {
@@ -973,6 +1302,7 @@ export const DockDash = GObject.registerClass({
         this._updateNumberOverlay();
 
         this.updateShowAppsButton();
+        this._magnifier?.syncTargets();
     }
 
     _updateNumberOverlay() {
@@ -1050,9 +1380,11 @@ export const DockDash = GObject.registerClass({
         this._showAppsIcon.visible = true;
         this._showAppsIcon.show(true);
         this.updateShowAppsButton();
+        this._magnifier?.syncTargets();
     }
 
     hideShowAppsButton() {
+        this._magnifier?.reset();
         this._showAppsIcon.visible = false;
     }
 
@@ -1102,6 +1434,8 @@ export const DockDash = GObject.registerClass({
             showAppsContainer.notify('first-child');
         if (!notifiedProperties.includes('last-child'))
             showAppsContainer.notify('last-child');
+
+        this._magnifier?.syncTargets();
     }
 });
 

@@ -6,11 +6,12 @@
     "48",
     "49"
 ],
-"uuid": "ubuntu-dock@ubuntu.com",
-"name": "Ubuntu Dock",
-"description": "A dock for the Gnome Shell, default Ubuntu experience. This extension is a modified version of Dash To Dock with different defaults. Dash To Dock can be installed to replace it and give more (but unsupported) configuration options.",
+"uuid": "ubuntu-dock-macos@khan",
+"name": "macOS Dock",
+"description": "A macOS-style dock for GNOME Shell. Fork of Ubuntu Dock with parabolic magnification, click bounce, and macOS visual styling.",
 "original-author": "micxgx@gmail.com",
 "url": "https://micheleg.github.io/dash-to-dock/",
 "gettext-domain": "dashtodock",
-"version": 102
+"settings-schema": "org.gnome.shell.extensions.dash-to-dock",
+"version": 103
 }
