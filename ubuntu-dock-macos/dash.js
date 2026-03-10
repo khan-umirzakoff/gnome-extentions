@@ -169,16 +169,13 @@ class DockDashMagnifier {
         });
 
         // Restore natural background size and position
-        if (this._dash._bgSizeTarget !== undefined) {
-             this._dash._bgSizeTarget = 0;
-             this._dash._bgShiftTarget = 0;
-             if (this._dash._isHorizontal) {
-                 this._dash._background.width = this._dash._dashContainer.width;
-                 this._dash._background.translation_x = 0;
-             } else {
-                 this._dash._background.height = this._dash._dashContainer.height;
-                 this._dash._background.translation_y = 0;
-             }
+        if (this._dash._bgSpread !== undefined) {
+             this._dash._bgSpread = 0;
+             this._dash._bgShift = 0;
+             this._dash._background.scale_x = 1;
+             this._dash._background.scale_y = 1;
+             this._dash._background.translation_x = 0;
+             this._dash._background.translation_y = 0;
         }
 
         this._restoreOrder();
@@ -311,28 +308,26 @@ class DockDashMagnifier {
             bgShift = (maxEdge + minEdge) / 2;
         }
 
-        if (this._dash._bgSizeTarget === undefined) this._dash._bgSizeTarget = 0;
-        if (this._dash._bgShiftTarget === undefined) this._dash._bgShiftTarget = 0;
+        if (this._dash._bgSpread === undefined) this._dash._bgSpread = 0;
+        if (this._dash._bgShift === undefined) this._dash._bgShift = 0;
 
-        this._dash._bgSizeTarget = this._interpolate(this._dash._bgSizeTarget, totalSpread);
-        this._dash._bgShiftTarget = this._interpolate(this._dash._bgShiftTarget, bgShift);
+        this._dash._bgSpread = this._interpolate(this._dash._bgSpread, totalSpread);
+        this._dash._bgShift = this._interpolate(this._dash._bgShift, bgShift);
 
         if (this._dash._isHorizontal) {
-             if (this._dash._dashContainer.width > 0) {
-                 this._dash._background.width = this._dash._dashContainer.width + this._dash._bgSizeTarget;
-                 this._dash._background.translation_x = this._dash._bgShiftTarget;
-             }
+             const baseBgWidth = this._dash._background.width || 1;
+             this._dash._background.scale_x = (baseBgWidth + this._dash._bgSpread) / baseBgWidth;
+             this._dash._background.translation_x = this._dash._bgShift;
         } else {
-             if (this._dash._dashContainer.height > 0) {
-                 this._dash._background.height = this._dash._dashContainer.height + this._dash._bgSizeTarget;
-                 this._dash._background.translation_y = this._dash._bgShiftTarget;
-             }
+             const baseBgHeight = this._dash._background.height || 1;
+             this._dash._background.scale_y = (baseBgHeight + this._dash._bgSpread) / baseBgHeight;
+             this._dash._background.translation_y = this._dash._bgShift;
         }
 
         let animating = false;
         
-        if (Math.abs(this._dash._bgSizeTarget - totalSpread) > 0.05 ||
-            Math.abs(this._dash._bgShiftTarget - bgShift) > 0.05) {
+        if (Math.abs(this._dash._bgSpread - totalSpread) > 0.05 ||
+            Math.abs(this._dash._bgShift - bgShift) > 0.05) {
             animating = true;
         }
 
@@ -603,17 +598,13 @@ export const DockDash = GObject.registerClass({
             source: this._isHorizontal ? this._showAppsIcon.icon : this._dashContainer,
             coordinate: Clutter.BindCoordinate.HEIGHT,
         }));
-        
-        // We only constrain the minor axis because the major axis (width for horiz, height for vert)
-        // is now fully driven by the _tick function's animation loop dynamically setting it on _background.
-        if (!this._isHorizontal) {
-            sizerBox.add_constraint(new Clutter.BindConstraint({
-                source: this._dashContainer,
-                coordinate: Clutter.BindCoordinate.WIDTH,
-            }));
-        }
+        sizerBox.add_constraint(new Clutter.BindConstraint({
+            source: this._isHorizontal ? this._dashContainer : this._showAppsIcon.icon,
+            coordinate: Clutter.BindCoordinate.WIDTH,
+        }));
 
         this._background.add_child(sizerBox);
+        this._background.set_pivot_point(0.5, 0.5);
 
         this.add_child(this._background);
         this.add_child(this._dashContainer);
