@@ -114,7 +114,6 @@ class DockDashMagnifier {
         this.reset();
         this._stopTick();
         this._targets = [];
-        this._raisedContainer = null;
     }
 
     syncTargets() {
@@ -359,7 +358,6 @@ class DockDashMagnifier {
             if (target.container)
                 target.container.z_position = 0;
         }
-
         this._raisedContainer = null;
     }
 
@@ -1450,6 +1448,9 @@ export const DockDash = GObject.registerClass({
  * @param actor
  */
 function ensureActorVisibleInScrollView(scrollView, actor) {
+    if (!scrollView.vadjustment && !(scrollView.vscroll && scrollView.vscroll.adjustment))
+        return [0, 0];
+
     // access to scrollView.[hv]scroll was deprecated in gnome 46
     // instead, adjustment can be accessed directly
     // keep old way for backwards compatibility (gnome <= 45)
