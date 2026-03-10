@@ -168,6 +168,19 @@ class DockDashMagnifier {
             target.actor.translation_y = 0;
         });
 
+        // Restore natural background size and position
+        if (this._dash._bgSizeTarget !== undefined) {
+             this._dash._bgSizeTarget = 0;
+             this._dash._bgShiftTarget = 0;
+             if (this._dash._isHorizontal) {
+                 this._dash._background.width = this._dash._dashContainer.width;
+                 this._dash._background.translation_x = 0;
+             } else {
+                 this._dash._background.height = this._dash._dashContainer.height;
+                 this._dash._background.translation_y = 0;
+             }
+        }
+
         this._restoreOrder();
     }
 
@@ -276,7 +289,52 @@ class DockDashMagnifier {
             }
         }
 
+        let totalSpread = 0;
+        let bgShift = 0;
+
+        // Calculate dynamic spread for the background based on translations & scale
+        if (this._targets.length > 0) {
+            let minEdge = 0;
+            let maxEdge = 0;
+            if (this._dash._isHorizontal) {
+                // Approximate left edge of first icon
+                minEdge = targetTranslations[0] - (targetScales[0] - 1) * this._dash.iconSize / 2;
+                // Approximate right edge of last icon
+                maxEdge = targetTranslations[this._targets.length - 1] + (targetScales[this._targets.length - 1] - 1) * this._dash.iconSize / 2;
+            } else {
+                // Approximate top edge of first icon
+                minEdge = targetTranslations[0] - (targetScales[0] - 1) * this._dash.iconSize / 2;
+                // Approximate bottom edge of last icon
+                maxEdge = targetTranslations[this._targets.length - 1] + (targetScales[this._targets.length - 1] - 1) * this._dash.iconSize / 2;
+            }
+            totalSpread = maxEdge - minEdge;
+            bgShift = (maxEdge + minEdge) / 2;
+        }
+
+        if (this._dash._bgSizeTarget === undefined) this._dash._bgSizeTarget = 0;
+        if (this._dash._bgShiftTarget === undefined) this._dash._bgShiftTarget = 0;
+
+        this._dash._bgSizeTarget = this._interpolate(this._dash._bgSizeTarget, totalSpread);
+        this._dash._bgShiftTarget = this._interpolate(this._dash._bgShiftTarget, bgShift);
+
+        if (this._dash._isHorizontal) {
+             if (this._dash._dashContainer.width > 0) {
+                 this._dash._background.width = this._dash._dashContainer.width + this._dash._bgSizeTarget;
+                 this._dash._background.translation_x = this._dash._bgShiftTarget;
+             }
+        } else {
+             if (this._dash._dashContainer.height > 0) {
+                 this._dash._background.height = this._dash._dashContainer.height + this._dash._bgSizeTarget;
+                 this._dash._background.translation_y = this._dash._bgShiftTarget;
+             }
+        }
+
         let animating = false;
+        
+        if (Math.abs(this._dash._bgSizeTarget - totalSpread) > 0.05 ||
+            Math.abs(this._dash._bgShiftTarget - bgShift) > 0.05) {
+            animating = true;
+        }
 
         for (let i = 0; i < this._targets.length; i++) {
             const target = this._targets[i];
@@ -545,10 +603,16 @@ export const DockDash = GObject.registerClass({
             source: this._isHorizontal ? this._showAppsIcon.icon : this._dashContainer,
             coordinate: Clutter.BindCoordinate.HEIGHT,
         }));
-        sizerBox.add_constraint(new Clutter.BindConstraint({
-            source: this._isHorizontal ? this._dashContainer : this._showAppsIcon.icon,
-            coordinate: Clutter.BindCoordinate.WIDTH,
-        }));
+        
+        // We only constrain the minor axis because the major axis (width for horiz, height for vert)
+        // is now fully driven by the _tick function's animation loop dynamically setting it on _background.
+        if (!this._isHorizontal) {
+            sizerBox.add_constraint(new Clutter.BindConstraint({
+                source: this._dashContainer,
+                coordinate: Clutter.BindCoordinate.WIDTH,
+            }));
+        }
+
         this._background.add_child(sizerBox);
 
         this.add_child(this._background);
