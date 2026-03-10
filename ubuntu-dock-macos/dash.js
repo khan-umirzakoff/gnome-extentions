@@ -469,13 +469,13 @@ export const DockDash = GObject.registerClass({
             clip_to_allocation: false,
         });
 
-        this._scrollView = new St.ScrollView({
+        // macOS does not use scrolling, and St.ScrollView enforces hard C-level clipping.
+        // We replace it with St.Widget to let magnified icons overflow safely.
+        this._scrollView = new St.Widget({
             name: 'dashtodockDashScrollview',
-            hscrollbar_policy: this._isHorizontal ? St.PolicyType.EXTERNAL : St.PolicyType.NEVER,
-            vscrollbar_policy: this._isHorizontal ?  St.PolicyType.NEVER : St.PolicyType.EXTERNAL,
+            layout_manager: new Clutter.BinLayout(),
             x_expand: this._isHorizontal,
             y_expand: !this._isHorizontal,
-            enable_mouse_scrolling: false,
             reactive: true,
             track_hover: true,
             clip_to_allocation: false,
@@ -505,6 +505,13 @@ export const DockDash = GObject.registerClass({
         this._box._delegate = this;
         this._boxContainer.add_child(this._box);
         Utils.addActor(this._scrollView, this._boxContainer);
+        
+        // Disable clipping on the St.ScrollView's viewport to allow magnified icons to stick out
+        const viewport = this._boxContainer.get_parent();
+        if (viewport) {
+            viewport.clip_to_allocation = false;
+        }
+
         this._dashContainer.add_child(this._scrollView);
 
         this._showAppsIcon = new AppIcons.DockShowAppsIcon(this._position);
@@ -770,6 +777,9 @@ export const DockDash = GObject.registerClass({
         if (!Docking.DockManager.settings.iconSizeFixed)
             return Clutter.EVENT_PROPAGATE;
 
+        if (!this._scrollView.get_hadjustment && !this._scrollView.get_hscroll_bar)
+            return Clutter.EVENT_PROPAGATE;
+
         // reset timeout to avid conflicts with the mousehover event
         this._ensureItemVisibility(null);
 
@@ -1011,12 +1021,12 @@ export const DockDash = GObject.registerClass({
 
         const maxIconSize = availSpace / iconChildren.length;
         const {scaleFactor} = St.ThemeContext.get_for_stage(global.stage);
-        const iconSizes = this._availableIconSizes.map(s => s * scaleFactor);
 
         let [newIconSize] = this._availableIconSizes;
-        for (let i = 0; i < iconSizes.length; i++) {
-            if (iconSizes[i] <= maxIconSize)
-                newIconSize = this._availableIconSizes[i];
+        if (!Docking.DockManager.settings.iconSizeFixed && this._availableIconSizes.length > 0) {
+            const maxAllowed = this._availableIconSizes[this._availableIconSizes.length - 1];
+            // Shrink linearly instead of snapping to baseIconSizes
+            newIconSize = Math.floor(Math.min(maxAllowed, Math.max(16, maxIconSize / scaleFactor)));
         }
 
         if (newIconSize === this.iconSize)
