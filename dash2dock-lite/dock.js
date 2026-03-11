@@ -1405,20 +1405,12 @@ export let Dock = GObject.registerClass(
       if (!this.extension.open_app_animation) {
         return;
       }
-      if (
-        !container.child.app ||
-        (container.child.app &&
-          container.child.app.get_n_windows &&
-          !container.child.app.get_n_windows())
-      ) {
-        if (container.child) {
-          this.animator.bounceIcon(container.child);
-          return;
+      if (container && container.child) {
+        let single_bounce = false;
+        if (container.child.app && container.child.app.get_n_windows && container.child.app.get_n_windows()) {
+            single_bounce = true;
         }
-      }
-      // bounce the custom icons
-      if (container.custom_icon || just_do_it) {
-        this.animator.bounceIcon(container.child);
+        this.animator.bounceIcon(container.child, single_bounce);
       }
     }
 

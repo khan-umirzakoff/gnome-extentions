@@ -1008,11 +1008,9 @@ export default class Dash2DockLiteExt extends Extension {
 
     // dash
     {
-      let r = rads[Math.floor(this.border_radius)];
+      let r = 24; // Force macOS rounded pill radius
       let ss = [];
-      if (this.panel_mode) {
-        r = 0;
-      }
+
       ss.push(`border-radius: ${r}px;`);
       this.computed_border_radius = r;
       let rgba = this._style.rgba(this.background_color);

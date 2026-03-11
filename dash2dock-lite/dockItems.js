@@ -14,6 +14,7 @@ import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
 import Clutter from 'gi://Clutter';
 import St from 'gi://St';
+import Meta from 'gi://Meta';
 
 import {
   DashIcon,
@@ -124,9 +125,9 @@ export const DockItemDotsOverlay = GObject.registerClass(
       let running_indicator_color = extension.running_indicator_color;
 
       renderer.set_state({
-        count: appCount,
-        color: running_indicator_color || [1, 1, 1, 1],
-        style: running_indicator_style || 'default',
+        count: 1, // macOS single dot
+        color: [1, 1, 1, 1], // Solid white dot
+        style: 'dot',
         size: extension.running_indicator_size || 0,
         rotate: vertical
           ? position == DockPosition.RIGHT
@@ -312,6 +313,29 @@ export const DockItemContainer = GObject.registerClass(
         this._menu.close();
         dashIcon._menu = this._menu;
       }
+
+      this.connect('notify::position', this.updateIconGeometry.bind(this));
+      this.connect('notify::size', this.updateIconGeometry.bind(this));
+    }
+
+    updateIconGeometry() {
+      if (!this.get_stage() || !this.child || !this.child.app) return;
+
+      let [x, y] = this.get_transformed_position();
+      let [w, h] = this.get_transformed_size();
+
+      if (isNaN(x) || isNaN(y) || isNaN(w) || isNaN(h)) return;
+
+      let rect = new Meta.Rectangle();
+      rect.x = Math.round(x);
+      rect.y = Math.round(y);
+      rect.width = Math.round(w);
+      rect.height = Math.round(h);
+
+      let windows = this.child.app.get_windows ? this.child.app.get_windows() : [];
+      if (windows) {
+        windows.forEach(w => w.set_icon_geometry(rect));
+      }
     }
 
     activateNewWindow() {
@@ -404,16 +428,6 @@ export const DockBackground = GObject.registerClass(
         this.width -= az * (1 + !vertical);
         this.y += az / 2;
         this.height -= az * (1 + vertical);
-
-        if (panel_mode) {
-          if (vertical) {
-            this.y = dock.y;
-            this.height = dock.height;
-          } else {
-            this.x = dock.x;
-            this.width = dock.width;
-          }
-        }
 
         this.opacity = 255;
         dock.dash.opacity = this.opacity;

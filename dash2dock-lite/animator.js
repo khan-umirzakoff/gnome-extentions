@@ -1083,7 +1083,7 @@ export let Animator = class {
     dock.extension.integrations.bms_update_size(this);
   }
 
-  bounceIcon(appwell) {
+  bounceIcon(appwell, single_bounce) {
     let dock = this.dock;
     let app_id = appwell._id;
 
@@ -1174,9 +1174,10 @@ export let Animator = class {
     ];
 
     let frames = [];
+    let bounceCount = single_bounce ? 1 : [3, 1, 2, 3][dock.extension.animation_bounce_frequency || 0];
     for (
       let i = 0;
-      i < [3, 1, 2, 3][dock.extension.animation_bounce_frequency || 0];
+      i < bounceCount;
       i++
     ) {
       _frames.forEach((b) => {
